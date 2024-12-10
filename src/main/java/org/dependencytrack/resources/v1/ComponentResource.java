@@ -52,6 +52,7 @@ import org.dependencytrack.persistence.QueryManager;
 import org.dependencytrack.resources.v1.openapi.PaginatedApi;
 import org.dependencytrack.util.InternalComponentIdentificationUtil;
 
+
 import jakarta.validation.Validator;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.DELETE;
@@ -65,8 +66,12 @@ import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * JAX-RS resources for processing components.
@@ -81,6 +86,8 @@ import java.util.Map;
         @SecurityRequirement(name = "BearerAuth")
 })
 public class ComponentResource extends AlpineResource {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(ComponentResource.class);
 
     @GET
     @Path("/project/{uuid}")
@@ -474,13 +481,22 @@ public class ComponentResource extends AlpineResource {
                 component.setNotes(StringUtils.trimToNull(jsonComponent.getNotes()));
 
                 component = qm.updateComponent(component, true);
-                Event.dispatch(
-                    new VulnerabilityAnalysisEvent(component)
-                    // Wait for RepositoryMetaEvent after VulnerabilityAnalysisEvent,
-// as both might be needed in policy evaluation
-                    .onSuccess(new RepositoryMetaEvent(List.of(component)))
-                    .onSuccess(new PolicyEvaluationEvent(component))
-                );
+
+                try {
+                    LOGGER.info("Dispatching VulnerabilityAnalysisEvent for component: " + component.getUuid());
+                    Event.dispatch(new VulnerabilityAnalysisEvent(component));
+
+                    LOGGER.info("Dispatching RepositoryMetaEvent for component: " + component.getUuid());
+                    Event.dispatch(new RepositoryMetaEvent(List.of(component)));
+
+                    // Dispatch a PolicyEvaluationEvent for the specific component with its project
+                    Event.dispatch(new PolicyEvaluationEvent(List.of(component)).project(component.getProject()));
+                    LOGGER.info("LanceLog PolicyEvaluationEvent dispatched for component: " + component.getUuid());
+
+                } catch (Exception e) {
+                    LOGGER.error("Error dispatching events for component: " + component.getUuid(), e);
+                }
+
                 return Response.ok(component).build();
             } else {
                 return Response.status(Response.Status.NOT_FOUND).entity("The UUID of the component could not be found.").build();

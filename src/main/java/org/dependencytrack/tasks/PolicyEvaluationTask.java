@@ -20,10 +20,17 @@ package org.dependencytrack.tasks;
 
 import alpine.event.framework.Event;
 import alpine.event.framework.Subscriber;
+import alpine.common.logging.Logger;
+import alpine.notification.Notification;
+import alpine.notification.NotificationLevel;
 import org.dependencytrack.event.PolicyEvaluationEvent;
 import org.dependencytrack.event.ProjectMetricsUpdateEvent;
 import org.dependencytrack.model.Component;
+import org.dependencytrack.model.PolicyViolation;
 import org.dependencytrack.model.Project;
+import org.dependencytrack.notification.NotificationScope;
+import org.dependencytrack.notification.NotificationGroup;
+import org.dependencytrack.persistence.QueryManager;
 import org.dependencytrack.policy.PolicyEngine;
 import org.slf4j.MDC;
 
@@ -38,6 +45,7 @@ import static org.dependencytrack.common.MdcKeys.MDC_PROJECT_VERSION;
 import static org.dependencytrack.util.LockUtil.getLockForProjectAndNamespace;
 
 public class PolicyEvaluationTask implements Subscriber {
+    private static final Logger LOGGER = Logger.getLogger(PolicyEngine.class);
 
     /**
      * {@inheritDoc}
@@ -45,9 +53,11 @@ public class PolicyEvaluationTask implements Subscriber {
     @Override
     public void inform(final Event e) {
         if (!(e instanceof final PolicyEvaluationEvent event)) {
+            LOGGER.info("LanceLog Received an unrelated event");
             return;
         }
         if (event.getProject() == null) {
+            LOGGER.info("LanceLog Project NULL");
             return;
         }
 
@@ -59,8 +69,10 @@ public class PolicyEvaluationTask implements Subscriber {
             lock.lock();
             if (event.getComponents() != null && !event.getComponents().isEmpty()) {
                 performPolicyEvaluation(event.getProject(), event.getComponents());
+                LOGGER.info("LanceLog Project performPolicyEvaluation event.getComponents");
             } else {
                 performPolicyEvaluation(event.getProject(), new ArrayList<>());
+                LOGGER.info("LanceLog Project performPolicyEvaluation new ArrayList");
             }
         } finally {
             lock.unlock();
@@ -68,12 +80,60 @@ public class PolicyEvaluationTask implements Subscriber {
     }
 
     private void performPolicyEvaluation(Project project, List<Component> components) {
-        // Evaluate the components against applicable policies via the PolicyEngine.
         final PolicyEngine pe = new PolicyEngine();
-        pe.evaluate(components);
+
+        // Evaluate components against policies
+        List<PolicyViolation> violations = pe.evaluate(components);
+
+        if (violations.isEmpty()) {
+            LOGGER.info("No policy violations detected for project: " + project.getName());
+            dispatchNoViolationNotification(project, components);
+        } else {
+            LOGGER.info("Policy violations detected for project: " + project.getName());
+        }
+
+        // Existing dispatch for metrics
         if (project != null) {
             Event.dispatch(new ProjectMetricsUpdateEvent(project.getUuid()));
         }
     }
+
+    private void dispatchNoViolationNotification(Project project, List<Component> components) {
+        try (QueryManager qm = new QueryManager()) {
+            // Re-fetch the project to ensure it is fully populated
+            Project fullProject = qm.getObjectById(Project.class, project.getId());
+            if (fullProject == null) {
+                LOGGER.warn("LanceLog Unable to load full project details for project ID: " + project.getId());
+                return; // Exit the method if the project cannot be loaded
+            }
+
+            String componentNames = components.stream()
+                    .map(Component::getName)
+                    .filter(name -> name != null && !name.isEmpty())
+                    .sorted()
+                    .toList()
+                    .toString();
+
+            String content = "Policy evaluation for project '" + fullProject.getName() + "' completed.\n"
+                    + "No violations were detected for the following components: " + componentNames;
+
+            final NotificationGroup notificationGroup = NotificationGroup.PROJECT_AUDIT_CHANGE;
+
+            Notification noViolationNotification = new Notification()
+                    .scope(NotificationScope.PORTFOLIO)
+                    .group(notificationGroup)
+                    .level(NotificationLevel.INFORMATIONAL)
+                    .title("No Policy Violations")
+                    .content(content)
+                    .subject(fullProject);
+
+            Notification.dispatch(noViolationNotification);
+            LOGGER.info("LanceLog Dispatching no-violation notification for project: " + fullProject.getName());
+            LOGGER.info("No-violation notification content: " + content);
+        } catch (Exception e) {
+            LOGGER.error("LanceLog Error dispatching no-violation notification for project: " + project.getId(), e);
+        }
+    }
+
 
 }

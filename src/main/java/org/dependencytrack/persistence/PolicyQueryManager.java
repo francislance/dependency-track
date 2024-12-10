@@ -179,6 +179,17 @@ final class PolicyQueryManager extends QueryManager implements IQueryManager {
             final Component component,
             final List<PolicyViolation> reportedViolations) {
         assertPersistent(component, "component must be persistent");
+
+        // ### Ensure reportedViolations are detached ###
+        List<PolicyViolation> detachedViolations = new ArrayList<>();
+        for (PolicyViolation violation : reportedViolations) {
+            if (pm.getObjectId(violation) != null) { // Persistent
+                detachedViolations.add(pm.detachCopy(violation));
+            } else {
+                detachedViolations.add(violation);
+            }
+        }
+
         assertNonPersistentAll(reportedViolations, "reportedViolations must not be persistent");
 
         runInTransaction(() -> {
@@ -238,8 +249,9 @@ final class PolicyQueryManager extends QueryManager implements IQueryManager {
                 });
             }
 
+            // ### Use detachedViolations here ###
             final var reportedViolationsByIdentity = new HashMap<ViolationIdentity, PolicyViolation>();
-            for (final PolicyViolation violation : reportedViolations) {
+            for (final PolicyViolation violation : detachedViolations) { // Use detachedViolations
                 reportedViolationsByIdentity.put(new ViolationIdentity(violation), violation);
             }
 

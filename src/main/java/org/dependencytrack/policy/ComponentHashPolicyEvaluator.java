@@ -36,6 +36,16 @@ import java.util.List;
  */
 public class ComponentHashPolicyEvaluator extends AbstractPolicyEvaluator {
 
+    private static final ThreadLocal<String> detectedValueHolder = new ThreadLocal<>();
+
+    private static void setDetectedValue(String value) {
+        detectedValueHolder.set(value);
+    }
+
+    public static String getDetectedValue() {
+        return detectedValueHolder.get();
+    }
+
     private static final Logger LOGGER = Logger.getLogger(ComponentHashPolicyEvaluator.class);
 
     /**
@@ -55,6 +65,14 @@ public class ComponentHashPolicyEvaluator extends AbstractPolicyEvaluator {
         for (final PolicyCondition condition : super.extractSupportedConditions(policy)) {
             LOGGER.debug("Evaluating component (" + component.getUuid() + ") against policy condition (" + condition.getUuid() + ")");
             final Hash hash = extractHashValues(condition);
+
+            if (hash != null) {
+                LOGGER.info("PolicyCondition extracted hash algorithm: " + hash.getAlgorithm());
+                LOGGER.info("PolicyCondition extracted hash value: " + hash.getValue());
+            } else {
+                LOGGER.warn("No hash extracted from PolicyCondition for component: " + component.getName());
+            }
+
             if (conditionApplies(hash, component, condition.getOperator())) {
                 LOGGER.info("Adding violation for component: " + component.getName() + " with condition: " + condition.getOperator());
                 violations.add(new PolicyConditionViolation(condition, component));
@@ -96,35 +114,47 @@ public class ComponentHashPolicyEvaluator extends AbstractPolicyEvaluator {
         };
     }
 
+    private String detectedValue; // Add this instance variable to hold the detected value
+
     private boolean matches(Hash hash, Component component) {
         if (hash != null && hash.getAlgorithm() != null && hash.getValue() != null) {
             String value = StringUtils.trimToNull(hash.getValue());
-            LOGGER.debug("Matching Hash: " + value + " with Component Hash for Algorithm: " + hash.getAlgorithm());
+            String detectedValue = null;
+
+            LOGGER.info("Matching Hash: " + value + " with Component Hash for Algorithm: " + hash.getAlgorithm());
             if (Hash.Algorithm.MD5.getSpec().equalsIgnoreCase(hash.getAlgorithm())) {
-                return value.equalsIgnoreCase(component.getMd5());
+                detectedValue = component.getMd5();
             } else if (Hash.Algorithm.SHA1.getSpec().equalsIgnoreCase(hash.getAlgorithm())) {
-                return value.equalsIgnoreCase(component.getSha1());
+                detectedValue = component.getSha1();
             } else if (Hash.Algorithm.SHA_256.getSpec().equalsIgnoreCase(hash.getAlgorithm())) {
-                return value.equalsIgnoreCase(component.getSha256());
+                detectedValue = component.getSha256();
             } else if (Hash.Algorithm.SHA_384.getSpec().equalsIgnoreCase(hash.getAlgorithm())) {
-                return value.equalsIgnoreCase(component.getSha384());
+                detectedValue = component.getSha384();
             } else if (Hash.Algorithm.SHA_512.getSpec().equalsIgnoreCase(hash.getAlgorithm())) {
-                return value.equalsIgnoreCase(component.getSha512());
+                detectedValue = component.getSha512();
             } else if (Hash.Algorithm.SHA3_256.getSpec().equalsIgnoreCase(hash.getAlgorithm())) {
-                return value.equalsIgnoreCase(component.getSha3_256());
+                detectedValue = component.getSha3_256();
             } else if (Hash.Algorithm.SHA3_384.getSpec().equalsIgnoreCase(hash.getAlgorithm())) {
-                return value.equalsIgnoreCase(component.getSha3_384());
+                detectedValue = component.getSha3_384();
             } else if (Hash.Algorithm.SHA3_512.getSpec().equalsIgnoreCase(hash.getAlgorithm())) {
-                return value.equalsIgnoreCase(component.getSha3_512());
+                detectedValue = component.getSha3_512();
             } else if (Hash.Algorithm.BLAKE3.getSpec().equalsIgnoreCase(hash.getAlgorithm())) {
-                return value.equalsIgnoreCase(component.getBlake3());
+                detectedValue = component.getBlake3();
             } else if (Hash.Algorithm.BLAKE2b_256.getSpec().equalsIgnoreCase(hash.getAlgorithm())) {
-                return value.equalsIgnoreCase(component.getBlake2b_256());
+                detectedValue = component.getBlake2b_256();
             } else if (Hash.Algorithm.BLAKE2b_384.getSpec().equalsIgnoreCase(hash.getAlgorithm())) {
-                return value.equalsIgnoreCase(component.getBlake2b_384());
+                detectedValue = component.getBlake2b_384();
             } else if (Hash.Algorithm.BLAKE2b_512.getSpec().equalsIgnoreCase(hash.getAlgorithm())) {
-                return value.equalsIgnoreCase(component.getBlake2b_512());
+                detectedValue = component.getBlake2b_512();
             }
+
+            setDetectedValue(detectedValue);
+
+            if (detectedValue != null) {
+                LOGGER.info("Comparing: " + value + " with: " + detectedValue);
+                return value.equalsIgnoreCase(detectedValue);
+            }
+
         }
         LOGGER.info("No match found - hash or algorithm is null.");
         return false;

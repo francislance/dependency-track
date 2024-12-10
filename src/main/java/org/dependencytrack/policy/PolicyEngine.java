@@ -86,12 +86,14 @@ public class PolicyEngine {
             }
             if (policy.isGlobal() || isPolicyAssignedToProject(policy, component.getProject())
                     || isPolicyAssignedToProjectTag(policy, component.getProject())) {
-                LOGGER.debug("Evaluating component (" + component.getUuid() + ") against policy (" + policy.getUuid() + ")");
+                LOGGER.info("Evaluating component (" + component.getUuid() + ") against policy (" + policy.getUuid() + ")");
                 final List<PolicyConditionViolation> policyConditionViolations = new ArrayList<>();
                 int policyConditionsViolated = 0;
                 for (final PolicyEvaluator evaluator : evaluators) {
                     evaluator.setQueryManager(qm);
                     final List<PolicyConditionViolation> policyConditionViolationsFromEvaluator = evaluator.evaluate(policy, component);
+                    LOGGER.info("PolicyEngine: Evaluator " + evaluator.getClass().getSimpleName() +
+                            " returned " + policyConditionViolationsFromEvaluator.size() + " violations.");
                     if (!policyConditionViolationsFromEvaluator.isEmpty()) {
                         policyConditionViolations.addAll(policyConditionViolationsFromEvaluator);
                         policyConditionsViolated += (int) policyConditionViolationsFromEvaluator.stream()
@@ -103,16 +105,22 @@ public class PolicyEngine {
                 }
                 if (Policy.Operator.ANY == policy.getOperator()) {
                     if (policyConditionsViolated > 0) {
-                        policyViolations.addAll(createPolicyViolations(policyConditionViolations));
+                        policyViolations.addAll(createPolicyViolations(qm, policyConditionViolations));
                     }
                 } else if (Policy.Operator.ALL == policy.getOperator() && policyConditionsViolated == policy.getPolicyConditions().size()) {
-                    policyViolations.addAll(createPolicyViolations(policyConditionViolations));
+                        policyViolations.addAll(createPolicyViolations(qm, policyConditionViolations));
                 }
             }
         }
-        qm.reconcilePolicyViolations(component, policyViolations);
+        qm.reconcilePolicyViolations(component, qm.detach(policyViolations));
+
+        LOGGER.info("Checking for new policy violations for component: " + component.getUuid());
         for (final PolicyViolation pv : qm.getAllPolicyViolations(component)) {
             if (existingPolicyViolations.stream().noneMatch(existingViolation -> existingViolation.getId() == pv.getId())) {
+                LOGGER.info("PolicyEngine: New violation detected. Dispatching notification for violation: " + pv.getUuid());
+                NotificationUtil.analyzeNotificationCriteria(qm, pv);
+            } else {
+                LOGGER.info("PolicyEngine: Existing violation found. Skipping notification for violation: (but will resend this time)" + pv.getUuid());
                 NotificationUtil.analyzeNotificationCriteria(qm, pv);
             }
         }
@@ -125,16 +133,26 @@ public class PolicyEngine {
         }
         return (policy.getProjects().stream().anyMatch(p -> p.getId() == project.getId()) || (Boolean.TRUE.equals(policy.isIncludeChildren()) && isPolicyAssignedToParentProject(policy, project)));
     }
-
-    private List<PolicyViolation> createPolicyViolations(final List<PolicyConditionViolation> pcvList) {
+    private List<PolicyViolation> createPolicyViolations(final QueryManager qm, final List<PolicyConditionViolation> pcvList) {
         final List<PolicyViolation> policyViolations = new ArrayList<>();
         for (PolicyConditionViolation pcv : pcvList) {
+            LOGGER.info("PolicyEngine: Creating policy violation for component: " + pcv.getComponent().getName() +
+                    ", policy condition: " + pcv.getPolicyCondition().getUuid());
             final PolicyViolation pv = new PolicyViolation();
             pv.setComponent(pcv.getComponent());
             pv.setPolicyCondition(pcv.getPolicyCondition());
             pv.setType(determineViolationType(pcv.getPolicyCondition().getSubject()));
             pv.setTimestamp(new Date());
-            policyViolations.add(pv);
+            PolicyViolation result = qm.addPolicyViolationIfNotExist(pv);
+            if (result != null) {
+                LOGGER.info("PolicyEngine: Successfully added policy violation for component: " +
+                        result.getComponent().getName() + ", violation ID: " + result.getUuid());
+            } else {
+                LOGGER.info("PolicyEngine: Policy violation for component: " + pv.getComponent().getName() +
+                        " already exists, skipping.");
+            }
+            policyViolations.add(result); // Keep original approach
+            //policyViolations.add(qm.addPolicyViolationIfNotExist(pv));
         }
         return policyViolations;
     }

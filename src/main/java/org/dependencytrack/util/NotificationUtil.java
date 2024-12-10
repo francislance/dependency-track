@@ -58,6 +58,7 @@ import org.dependencytrack.notification.vo.VexConsumedOrProcessed;
 import org.dependencytrack.notification.vo.ViolationAnalysisDecisionChange;
 import org.dependencytrack.parser.common.resolver.CweResolver;
 import org.dependencytrack.persistence.QueryManager;
+import org.dependencytrack.policy.ComponentHashPolicyEvaluator;
 
 import jakarta.json.Json;
 import jakarta.json.JsonArray;
@@ -78,6 +79,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
+import static io.swagger.v3.oas.integration.StringOpenApiConfigurationLoader.LOGGER;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
 public final class NotificationUtil {
@@ -242,20 +244,29 @@ public final class NotificationUtil {
     }
 
     public static void analyzeNotificationCriteria(final QueryManager qm, final PolicyViolation policyViolation) {
-        final ViolationAnalysis violationAnalysis = qm.getViolationAnalysis(policyViolation.getComponent(), policyViolation);
-        if (violationAnalysis != null && (violationAnalysis.isSuppressed() || ViolationAnalysisState.APPROVED == violationAnalysis.getAnalysisState())) return;
+        LOGGER.info("Analyzing notification criteria for policy violation: " + policyViolation.getUuid());
+
         policyViolation.getPolicyCondition().getPolicy(); // Force loading of policy
         qm.getPersistenceManager().getFetchPlan().setMaxFetchDepth(3); // Ensure policy is included
         qm.getPersistenceManager().getFetchPlan().setDetachmentOptions(FetchPlan.DETACH_LOAD_FIELDS);
         final PolicyViolation pv = qm.getPersistenceManager().detachCopy(policyViolation);
+
+        NotificationLevel level = switch (policyViolation.getPolicyCondition().getPolicy().getViolationState()) {
+            case FAIL -> NotificationLevel.ERROR; // Map "FAIL" to "ERROR"
+            case WARN -> NotificationLevel.WARNING; // Map "WARN" to "WARNING"
+            default -> NotificationLevel.INFORMATIONAL; // Default to "INFORMATIONAL"
+        };
+
         Notification.dispatch(new Notification()
                 .scope(NotificationScope.PORTFOLIO)
                 .group(NotificationGroup.POLICY_VIOLATION)
-                .title(generateNotificationTitle(NotificationConstants.Title.POLICY_VIOLATION,policyViolation.getComponent().getProject()))
-                .level(NotificationLevel.INFORMATIONAL)
+                .title(generateNotificationTitle(NotificationConstants.Title.POLICY_VIOLATION, policyViolation.getComponent().getProject()))
+                .level(level)
                 .content(generateNotificationContent(pv))
                 .subject(new PolicyViolationIdentified(pv, pv.getComponent(), pv.getProject()))
         );
+
+        LOGGER.info("Notification dispatched for policy violation: " + policyViolation.getUuid());
     }
 
     public static JsonObject toJson(final Project project) {
@@ -607,8 +618,15 @@ public final class NotificationUtil {
         return content;
     }
 
-    private static String generateNotificationContent(final PolicyViolation policyViolation) {
-        return "A " + policyViolation.getType().name().toLowerCase() + " policy violation occurred";
+    public static String generateNotificationContent(final PolicyViolation policyViolation) {
+        String detectedValue = ComponentHashPolicyEvaluator.getDetectedValue();
+        String baseMessage = "A DT " + policyViolation.getType().name().toLowerCase() + " violation detected.";
+
+        if (detectedValue != null) {
+            return baseMessage + " Value: " + detectedValue;
+        }
+
+        return baseMessage;
     }
 
     private static String generateNotificationContent(final Component component, final List<Vulnerability> vulnerabilities) {
